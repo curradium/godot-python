@@ -40,7 +40,7 @@ vars.Add("gdnative_include_dir", "Path to GDnative include directory", "")
 vars.Add(
     "godot_release_base_url",
     "URL to the godot builder release to use",
-    "https://github.com/GodotBuilder/godot-builds/releases/download/3.0_20180303-1",
+    "https://downloads.tuxfamily.org/godotengine/3.2/",
 )
 vars.Add(
     BoolVariable(
