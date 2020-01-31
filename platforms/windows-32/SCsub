@@ -2,9 +2,12 @@
 # https://docs.python.org/3/faq/windows.html#how-can-i-embed-python-into-a-windows-application
 # tl;dr: onyl msvc is supported to link against pythonxx.dll
 
-from __future__ import print_function
-import os, glob, shutil
+import os
+import glob
+import shutil
 import subprocess
+from itertools import chain
+from pathlib import Path
 from SCons.Errors import UserError
 
 
@@ -25,168 +28,138 @@ if not env["godot_binary"]:
         "curl -L %s/godot.windows.opt.debug.32.exe -o ${TARGET}"
         % env["godot_release_base_url"],
     )
-    env.NoClean(env["godot_binary"])
-
-
-### GDnative stuff ###
-
-
-if not env["gdnative_include_dir"]:
-    env["gdnative_include_dir"] = Dir("../gdnative/include")
-if not env["gdnative_wrapper_lib"]:
-    env["gdnative_wrapper_lib"] = File(
-        "../gdnative/gdnative_wrapper_code.windows.opt.32.lib"
-    )
-    env.Command(
-        env["gdnative_wrapper_lib"],
-        None,
-        "curl -L %s/gdnative_wrapper_code.windows.opt.32.lib -o ${TARGET}"
-        % env["godot_release_base_url"],
-    )
-    env.NoClean(env["gdnative_wrapper_lib"])
+env.NoClean(env["godot_binary"])
 
 
 ### Python interpreter ###
 
+cpython_src = env.Dir("cpython")
+env.Command(
+    cpython_src,
+    None,
+    "git clone https://github.com/python/cpython.git --depth=1 --branch=v3.7.1 --single-branch ${TARGET}",
+)
+env.NoClean(cpython_src)
 
-if env["backend"] == "cpython":
-    # Build dir is within the source dir... which is something scons hates !
-    # So we merge the two steps together.
-    cpython_build = Dir("cpython/PCBuild/win32")
-    env.Command(
-        cpython_build,
-        None,
+
+# Build dir is within the source dir... which is something scons hates !
+# So we merge the two steps together.
+cpython_build = env.Dir("cpython/PCBuild/win32")
+env.Command(
+    cpython_build,
+    None,
+    (
+        "echo Cloning CPython... && "
         "git clone https://github.com/python/cpython.git --depth=1 --branch=v3.7.1 --single-branch platforms\\windows-32\\cpython && "
-        + "${TARGET}\\..\\get_externals.bat --python=python && "
-        + "${TARGET}\\..\\build.bat -p Win32",
-    )
-    env.NoClean(cpython_build)
+        "echo Configuring CPython... && "
+        "${TARGET}\\..\\get_externals.bat --python=python && "
+        "echo Building CPython... && "
+        "${TARGET}\\..\\build.bat -p Win32"
+    ),
+)
+env.NoClean(cpython_build)
 
-    def generate_build_dir(target, source, env):
-        target = target[0]
-        cpython_build = source[0]
-        libpythonscript = source[1]
-        godot_embedded = source[2]
 
-        if os.path.isdir(target.path):
-            shutil.rmtree(target.path)
-        os.mkdir(target.path)
+def add_cpython_to_build_dir(env, target, cpython_build):
+    def c(subpath=""):
+        return os.path.join(cpython_build.abspath, *subpath.split("/"))
 
-        def c(subpath=""):
-            return os.path.join(cpython_build.abspath, *subpath.split("/"))
+    def p(subpath=""):
+        return os.path.join(target.abspath, "pythonscript", *subpath.split("/"))
 
-        def p(subpath=""):
-            return os.path.join(target.abspath, "pythonscript", *subpath.split("/"))
+    os.mkdir(p())
 
+    open(p(".gdignore"), "w").close()
+
+    for pyd in glob.glob(c("*.pyd")):
+        shutil.copy(pyd, p())
+    for pyd in glob.glob(c("*.dll")):
+        shutil.copy(pyd, p())
+    shutil.copy(c("python.exe"), p())
+    shutil.copy(c("pythonw.exe"), p())
+
+    # Remove __pycache__ to save lots of space
+    for root, dirs, files in os.walk(c("../../Lib")):
+        if "__pycache__" in dirs:
+            shutil.rmtree(os.path.join(root, "__pycache__"))
+
+    shutil.copytree(c("../../Lib"), p("lib"))
+
+    if env["compressed_stdlib"]:
+        shutil.make_archive(base_name=p("python37"), format="zip", root_dir=p("lib"))
+        shutil.rmtree(p("lib"))
+        os.mkdir(p("lib/"))
+
+    def _run_or_die(cmd):
+        run = subprocess.Popen(
+            cmd.split(),
+            cwd=p(),
+            shell=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+        )
+        ret = run.wait()
+        if ret:
+            stdout, stderr = run.communicate()
+            raise RuntimeError(
+                "ERROR: `%s` returned %s\n"
+                " ===== stdout =====\n%s\n\n"
+                " ===== stderr =====\n%s" % (cmd, ret, stdout, stderr)
+            )
+
+    _run_or_die("python.exe -m ensurepip")
+    _run_or_die("python.exe -m pip install cffi")
+
+
+def add_pythonscript_stuff_to_build_dir(
+    env, target, libpythonscript, _godot_module, godot_module
+):
+    def p(subpath=""):
+        return os.path.join(target.abspath, "pythonscript", *subpath.split("/"))
+
+    try:
         os.mkdir(p())
-        for pyd in glob.glob(c("*.pyd")):
-            shutil.copy(pyd, p())
-        for pyd in glob.glob(c("*.dll")):
-            shutil.copy(pyd, p())
-        shutil.copy(c("python.exe"), p())
-        shutil.copy(c("pythonw.exe"), p())
+    except FileExistsError:
+        pass
 
-        shutil.copy(libpythonscript.path, p())
-        open(p(".gdignore"), "w").close()
+    print(f"Copy {libpythonscript.path} -> {p()}")
+    shutil.copy(libpythonscript.path, p())
 
-        # Remove __pycache__ to save lots of space
-        for root, dirs, files in os.walk(c("../../Lib")):
-            if "__pycache__" in dirs:
-                shutil.rmtree(os.path.join(root, "__pycache__"))
+    print(f"Copy {_godot_module.path} -> {p('lib/site-packages/')}")
+    shutil.copy(_godot_module.path, p("lib/site-packages/"))
 
-        shutil.copytree(c("../../Lib"), p("lib"))
+    if env["dev_dyn"]:
+        import _winapi
 
-        if env["compressed_stdlib"]:
-            shutil.make_archive(
-                base_name=p("python37"), format="zip", root_dir=p("lib")
+        if os.path.exists(p("lib/site-packages/godot")):
+            print(
+                f"dev_dyn: skip creating NTFS junction, {p('lib/site-packages/godot')} already exists"
             )
-            shutil.rmtree(p("lib"))
-            os.mkdir(p("lib/"))
-
-        def _run_or_die(cmd):
-            run = subprocess.Popen(
-                cmd.split(),
-                cwd=p(),
-                shell=True,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
+        else:
+            print(
+                f"dev_dyn: NTFS junction {godot_module.abspath} -> {p('lib/site-packages/godot')}"
             )
-            ret = run.wait()
-            if ret:
-                stdout, stderr = run.communicate()
-                raise RuntimeError(
-                    "ERROR: `%s` returned %s\n"
-                    " ===== stdout =====\n%s\n\n"
-                    " ===== stderr =====\n%s" % (cmd, ret, stdout, stderr)
-                )
+            _winapi.CreateJunction(godot_module.abspath, p("lib/site-packages/godot"))
+        env.NoClean(p("lib/site-packages/godot"))
 
-        _run_or_die("python.exe -m ensurepip")
-        _run_or_die("python.exe -m pip install cffi")
+    else:
+        dst_dir = Path(p("lib/site-packages/godot"))
+        src_dir = Path(godot_module.path)
+        print(f"Copy {src_dir} -> {dst_dir}")
+        for src_item in chain(
+            src_dir.glob("**/*.py"), src_dir.glob("**/*.pyd"), src_dir.glob("**/*.pxd"),
+        ):
+            dst_item = dst_dir / src_item.relative_to(src_dir)
+            dst_item.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(str(src_item), str(dst_item))
 
-        if env["dev_dyn"]:
-            os.symlink(godot_embedded.abspath, p("lib/godot"))
-        else:
-            shutil.copytree(godot_embedded.path, p("lib/godot"))
 
-        if "generate_build_dir_hook" in env:
-            env["generate_build_dir_hook"](target.abspath)
-
-    env["generate_build_dir"] = generate_build_dir
-    env["backend_dir"] = cpython_build
-    env.Append(CFLAGS="-DBACKEND_CPYTHON")
-    env.Append(CFLAGS="-I %s\\..\\.." % cpython_build.path)
-    env.Append(CFLAGS="-I %s\\..\\..\\Include" % cpython_build.path)
-    env.Append(CFLAGS="-I %s\\..\\..\\PC" % cpython_build.path)
-    env.Append(LIBPATH=cpython_build.path)
-    env.Append(LIBS=["python37"])
-
-else:  # pypy
-    PYPY_SRC_NAME = "pypy3-v6.0.0-win32"
-    PYPY_SRC_ARCHIVE = "%s.zip" % PYPY_SRC_NAME
-    PYPY_SRC_ARCHIVE_URL = (
-        "https://bitbucket.org/pypy/pypy/downloads/%s" % PYPY_SRC_ARCHIVE
-    )
-
-    pypy_build = Dir(PYPY_SRC_NAME)
-
-    env.Command(
-        PYPY_SRC_ARCHIVE, None, "curl -L %s -o ${TARGET}" % PYPY_SRC_ARCHIVE_URL
-    )
-    env.NoClean(PYPY_SRC_ARCHIVE)
-    env.Command(pypy_build, PYPY_SRC_ARCHIVE, "unzip -q ${SOURCE} -d ${TARGET.srcdir}")
-
-    def generate_build_dir(target, source, env):
-        target = target[0]
-        pypy_build = source[0]
-        libpythonscript = source[1]
-        godot_embedded = source[2]
-
-        if os.path.isdir(target.path):
-            shutil.rmtree(target.path)
-        os.mkdir(target.path)
-
-        def c(subpath=""):
-            return os.path.join(pypy_build.abspath, *subpath.split("/"))
-
-        def p(subpath=""):
-            return os.path.join(target.abspath, "pythonscript", *subpath.split("/"))
-
-        shutil.copytree(c(), p())
-        shutil.copy(libpythonscript.path, p())
-        os.unlink(p("LICENSE"))
-        os.unlink(p("README.rst"))
-        open(p(".gdignore"), "w").close()
-
-        if env["dev_dyn"]:
-            os.symlink(godot_embedded.abspath, p("site-packages/godot"))
-        else:
-            shutil.copytree(godot_embedded.path, p("site-packages/godot"))
-
-        if "generate_build_dir_hook" in env:
-            env["generate_build_dir_hook"](target.abspath)
-
-    env["generate_build_dir"] = generate_build_dir
-    env["backend_dir"] = pypy_build
-    env.Append(CFLAGS="-DBACKEND_PYPY")
-    env.Append(CFLAGS="-I %s/include" % pypy_build.path)
-    env.AppendUnique(LIBPATH=["%s/libs" % pypy_build.path, pypy_build.path])
+env["add_cpython_to_build_dir"] = add_cpython_to_build_dir
+env["add_pythonscript_stuff_to_build_dir"] = add_pythonscript_stuff_to_build_dir
+env["backend_dir"] = cpython_build
+env.Append(CFLAGS=["-DBACKEND_CPYTHON"])
+env.Append(CFLAGS=["-I%s\\..\\.." % cpython_build.path])
+env.Append(CFLAGS=["-I%s\\..\\..\\Include" % cpython_build.path])
+env.Append(CFLAGS=["-I%s\\..\\..\\PC" % cpython_build.path])
+env.Append(LIBPATH=[cpython_build.path])
+env.Append(LIBS=["python37"])

@@ -1,25 +1,23 @@
-from godot import exposed, signal, export
-from godot.bindings import Node2D
+from godot import exposed, signal, export, Node2D
 
 
-SCORE_TO_WIN = 10
+SCORE_TO_WIN = 2
 
 
 @exposed
 class Pong(Node2D):
-    a = export(int)
-    b = export(str, default='foo')
     game_finished = signal()
 
     def _ready(self):
         self.score_left = 0
         self.score_right = 0
         # let each paddle know which one is left, too
-        self.get_node("player1").left
-        self.get_node("player1").left = True
-        self.get_node("player2").left = False
-        self.get_node("player1").action_prefix = 'p1'
-        self.get_node("player2").action_prefix = 'p2'
+        p1 = self.get_node("player1")
+        p2 = self.get_node("player2")
+        p1.left = True
+        p2.left = False
+        p1.action_prefix = 'p1'
+        p2.action_prefix = 'p2'
 
     def update_score(self, add_to_left):
         if add_to_left:

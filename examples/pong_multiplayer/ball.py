@@ -1,5 +1,4 @@
-from godot import exposed, rpcsync
-from godot.bindings import Area2D, Vector2
+from godot import exposed, rpcsync, Area2D, Vector2
 
 
 DEFAULT_SPEED = 80
@@ -49,8 +48,6 @@ class Ball(Area2D):
 
     @rpcsync
     def bounce(self, left, random):
-        import pdb; pdb.set_trace()
-        print('===================================>BOUNCE', left, random)
         # using sync because both players can make it bounce
         if (self.left):
             self.direction.x = abs(self.direction.x)
