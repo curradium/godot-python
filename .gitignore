@@ -44,3 +44,6 @@ pythonscript/godot/pool_arrays.pyx
 
 # scons stuff
 custom.py
+
+# IDE stuff
+*.kdev4
